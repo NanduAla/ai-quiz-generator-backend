@@ -1,120 +1,78 @@
-# backend/main.py
 from dotenv import load_dotenv
-load_dotenv()  # Load environment variables first
-
-import os
-import json
-from fastapi import FastAPI, Depends, HTTPException, status
+import os, json
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from sqlalchemy import exc as sqlalchemy_exc
-from requests.exceptions import RequestException
 import uvicorn
 
-# Local modules
 from database import get_db, init_db, Quiz
 from models import URLInput, QuizOutput
 from scraper import scrape_wikipedia
 from llm_quiz_generator import generate_quiz_data
 
-# --- Initialization ---
-app = FastAPI(
-    title="AI Wiki Quiz Generator",
-    description="Full-stack application using FastAPI, LangChain, and Gemini to create quizzes from Wikipedia URLs."
-)
+# Load .env locally; on Render, vars are in the environment
+load_dotenv()
 
-# Initialize database
+app = FastAPI(title="AI Wiki Quiz Generator")
+
+# Initialize DB
 init_db()
 
-# --- CORS Configuration ---
-# Replace with your actual Vercel frontend URL
-frontend_url = "https://ai-quiz-generator.vercel.app"
-
-origins = [
-    "http://localhost:3000",  # Local frontend
-    frontend_url               # Live frontend
-]
-
+# CORS
+FRONTEND_URL = os.getenv("FRONTEND_URL", "*")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=[FRONTEND_URL] if FRONTEND_URL != "*" else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- Endpoint 0: Health Check ---
-@app.get("/")
-def read_root():
-    return {"message": "AI Wiki Quiz Generator API is running! Use /generate_quiz or /history endpoints."}
-
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
 
-# --- Endpoint 1: Generate Quiz ---
-@app.post("/generate_quiz", response_model=QuizOutput, status_code=status.HTTP_201_CREATED)
+@app.post("/generate_quiz", response_model=QuizOutput)
 def generate_quiz(url_input: URLInput, db: Session = Depends(get_db)):
-    url = str(url_input.url)
     try:
-        clean_content, article_title = scrape_wikipedia(url)
-    except (RequestException, ValueError) as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Scraping failed: {e}")
+        clean_content, article_title = scrape_wikipedia(url_input.url)
+        quiz_data = generate_quiz_data(clean_content)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
+    # Save to DB
     try:
-        quiz_data_dict = generate_quiz_data(article_content=clean_content)
-    except RuntimeError as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"AI generation failed: {e}")
-
-    quiz_data_dict['url'] = url
-    quiz_data_dict['title'] = article_title
-
-    try:
-        quiz_json_string = json.dumps(quiz_data_dict)
         db_quiz = Quiz(
-            url=url,
+            url=url_input.url,
             title=article_title,
             scraped_content=clean_content,
-            full_quiz_data=quiz_json_string
+            full_quiz_data=json.dumps(quiz_data)
         )
         db.add(db_quiz)
         db.commit()
         db.refresh(db_quiz)
-
-        quiz_data_dict['id'] = db_quiz.id
-        quiz_data_dict['date_generated'] = db_quiz.date_generated.isoformat()
-
-    except sqlalchemy_exc.SQLAlchemyError as e:
+        quiz_data['id'] = db_quiz.id
+        quiz_data['date_generated'] = db_quiz.date_generated.isoformat()
+    except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Database storage failed: {e}")
+        raise HTTPException(status_code=500, detail=f"DB Error: {e}")
 
-    return quiz_data_dict
+    return quiz_data
 
-# --- Endpoint 2: History ---
 @app.get("/history")
-def get_quiz_history(db: Session = Depends(get_db)):
+def get_history(db: Session = Depends(get_db)):
     quizzes = db.query(Quiz).order_by(Quiz.date_generated.desc()).all()
-    return [
-        {"id": q.id, "url": q.url, "title": q.title, "date_generated": q.date_generated.isoformat()}
-        for q in quizzes
-    ]
+    return [{"id": q.id, "title": q.title, "url": q.url, "date_generated": q.date_generated.isoformat()} for q in quizzes]
 
-# --- Endpoint 3: Fetch Specific Quiz ---
 @app.get("/quiz/{quiz_id}")
 def get_single_quiz(quiz_id: int, db: Session = Depends(get_db)):
-    db_quiz = db.query(Quiz).filter(Quiz.id == quiz_id).first()
-    if db_quiz is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiz not found")
-    try:
-        full_data = json.loads(db_quiz.full_quiz_data)
-        full_data['id'] = db_quiz.id
-        full_data['url'] = db_quiz.url
-        full_data['date_generated'] = db_quiz.date_generated.isoformat()
-        return full_data
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Stored quiz data is corrupted.")
+    quiz = db.query(Quiz).filter(Quiz.id == quiz_id).first()
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+    data = json.loads(quiz.full_quiz_data)
+    data.update({"id": quiz.id, "url": quiz.url, "date_generated": quiz.date_generated.isoformat()})
+    return data
 
-# --- Uvicorn Run Config ---
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))  # Render sets PORT dynamically
+    port = int(os.environ.get("PORT", 8000))  # Render provides PORT
     uvicorn.run("main:app", host="0.0.0.0", port=port)
