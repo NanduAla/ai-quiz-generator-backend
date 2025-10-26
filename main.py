@@ -40,10 +40,10 @@ def generate_quiz(url_input: URLInput, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # Save to DB
+    # Save to DB (convert HttpUrl to string)
     try:
         db_quiz = Quiz(
-            url=url_input.url,
+            url=str(url_input.url),
             title=article_title,
             scraped_content=clean_content,
             full_quiz_data=json.dumps(quiz_data)
@@ -62,7 +62,15 @@ def generate_quiz(url_input: URLInput, db: Session = Depends(get_db)):
 @app.get("/history")
 def get_history(db: Session = Depends(get_db)):
     quizzes = db.query(Quiz).order_by(Quiz.date_generated.desc()).all()
-    return [{"id": q.id, "title": q.title, "url": q.url, "date_generated": q.date_generated.isoformat()} for q in quizzes]
+    return [
+        {
+            "id": q.id,
+            "title": q.title,
+            "url": q.url,
+            "date_generated": q.date_generated.isoformat()
+        }
+        for q in quizzes
+    ]
 
 @app.get("/quiz/{quiz_id}")
 def get_single_quiz(quiz_id: int, db: Session = Depends(get_db)):
