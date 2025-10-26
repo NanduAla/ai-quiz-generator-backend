@@ -1,5 +1,7 @@
+# backend/main.py
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv()  # Load environment variables first
+
 import os
 import json
 from fastapi import FastAPI, Depends, HTTPException, status
@@ -25,12 +27,13 @@ app = FastAPI(
 init_db()
 
 # --- CORS Configuration ---
-frontend_url = os.environ.get("FRONTEND_URL")  # Set this in Render environment variables
-origins = [
-    "http://localhost:3000",
-    "https://ai-quiz-generator-delta-nine.vercel.app"  # Your deployed frontend
-]
+# Replace with your actual Vercel frontend URL
+frontend_url = "https://ai-quiz-generator.vercel.app"
 
+origins = [
+    "http://localhost:3000",  # Local frontend
+    frontend_url               # Live frontend
+]
 
 app.add_middleware(
     CORSMiddleware,
@@ -40,12 +43,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Health Check ---
+# --- Endpoint 0: Health Check ---
+@app.get("/")
+def read_root():
+    return {"message": "AI Wiki Quiz Generator API is running! Use /generate_quiz or /history endpoints."}
+
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
 
-# --- Generate Quiz ---
+# --- Endpoint 1: Generate Quiz ---
 @app.post("/generate_quiz", response_model=QuizOutput, status_code=status.HTTP_201_CREATED)
 def generate_quiz(url_input: URLInput, db: Session = Depends(get_db)):
     url = str(url_input.url)
@@ -83,7 +90,7 @@ def generate_quiz(url_input: URLInput, db: Session = Depends(get_db)):
 
     return quiz_data_dict
 
-# --- History ---
+# --- Endpoint 2: History ---
 @app.get("/history")
 def get_quiz_history(db: Session = Depends(get_db)):
     quizzes = db.query(Quiz).order_by(Quiz.date_generated.desc()).all()
@@ -92,11 +99,11 @@ def get_quiz_history(db: Session = Depends(get_db)):
         for q in quizzes
     ]
 
-# --- Fetch Single Quiz ---
+# --- Endpoint 3: Fetch Specific Quiz ---
 @app.get("/quiz/{quiz_id}")
 def get_single_quiz(quiz_id: int, db: Session = Depends(get_db)):
     db_quiz = db.query(Quiz).filter(Quiz.id == quiz_id).first()
-    if not db_quiz:
+    if db_quiz is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiz not found")
     try:
         full_data = json.loads(db_quiz.full_quiz_data)
@@ -107,7 +114,7 @@ def get_single_quiz(quiz_id: int, db: Session = Depends(get_db)):
     except json.JSONDecodeError:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Stored quiz data is corrupted.")
 
-# --- Run ---
+# --- Uvicorn Run Config ---
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.environ.get("PORT", 8000))  # Render sets PORT dynamically
     uvicorn.run("main:app", host="0.0.0.0", port=port)
