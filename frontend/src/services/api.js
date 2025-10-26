@@ -1,5 +1,5 @@
 // frontend/src/services/api.js
-const BACKEND_URL = 'http://localhost:8000';
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 
 /**
  * Calls the FastAPI endpoint to generate a new quiz from a Wikipedia URL.
